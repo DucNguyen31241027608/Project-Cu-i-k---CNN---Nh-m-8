@@ -1,0 +1,113 @@
+# ======================================
+# 🧠 TRAINING CNN MODEL - NÂNG CẤP CHUYÊN SÂU
+# ======================================
+import tensorflow as tf
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout, BatchNormalization
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
+
+# --- 1. Tạo generator TÁCH BIỆT augmentation cho tập train ---
+# Augmentation chỉ áp dụng cho tập huấn luyện
+train_datagen = tf.keras.preprocessing.image.ImageDataGenerator(
+    rescale=1./255,
+    rotation_range=20, # Tăng nhẹ rotation
+    zoom_range=0.25,   # Tăng nhẹ zoom
+    width_shift_range=0.1,
+    height_shift_range=0.1,
+    shear_range=0.1,
+    horizontal_flip=True,
+    fill_mode='nearest', # Thêm fill_mode
+    validation_split=0.2 # Keep validation_split here for the training generator
+)
+
+# Generator KHÔNG AUGMENTATION cho tập validation/test - REMOVED THIS AS WE USE ONE GENERATOR
+# val_test_datagen = tf.keras.preprocessing.image.ImageDataGenerator(
+#     rescale=1./255, # Remove validation_split here
+#     validation_split=0.2 # Add validation_split back for the validation generator
+# )
+
+train_gen = train_datagen.flow_from_directory(
+    "/content/drive/MyDrive/ai/train",
+    target_size=(128,128),
+    batch_size=32,
+    class_mode='categorical',
+    subset='training'
+)
+
+# Use train_datagen for the validation generator as well, specifying subset='validation'
+val_gen = train_datagen.flow_from_directory(
+    "/content/drive/MyDrive/ai/train",
+    target_size=(128,128),
+    batch_size=32,
+    class_mode='categorical',
+    subset='validation' # Still use subset='validation' with the validation generator
+)
+
+
+# --- 2. Kiến trúc CNN cải tiến (Điều chỉnh Filters và Kernel) ---
+model = Sequential([
+    # Tầng 1: Dùng kernel 5x5 để bắt đặc trưng lớn, sau đó là 3x3
+    Conv2D(32, (5,5), activation='relu', padding='same', input_shape=(128,128,3)),
+    BatchNormalization(),
+    MaxPooling2D(2,2),
+
+    # Tầng 2
+    Conv2D(64, (3,3), activation='relu', padding='same'),
+    BatchNormalization(),
+    MaxPooling2D(2,2),
+
+    # Tầng 3: Tăng filters lên 128
+    Conv2D(128, (3,3), activation='relu', padding='same'),
+    BatchNormalization(),
+    MaxPooling2D(2,2),
+
+    # Tầng 4: Thêm 1 tầng Conv nữa với 256 filters (hoặc giữ 128)
+    Conv2D(256, (3,3), activation='relu', padding='same'),
+    BatchNormalization(),
+    MaxPooling2D(2,2),
+
+
+    Flatten(),
+    Dropout(0.5),
+    # Giảm số nơ-ron ở tầng Dense để giảm overfitting/tham số
+    Dense(128, activation='relu'),
+    BatchNormalization(),
+    Dense(train_gen.num_classes, activation='softmax')
+])
+
+# --- 3. Biên dịch model ---
+# Giữ nguyên Adam 0.0005, là một lựa chọn tốt
+model.compile(
+    optimizer=Adam(learning_rate=0.0005),
+    loss='categorical_crossentropy',
+    metrics=['accuracy']
+)
+
+# --- 4. Callback chống overfitting & tối ưu học (Điều chỉnh thông số) ---
+callbacks = [
+    # Theo dõi val_loss, kiên nhẫn hơn một chút
+    EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True),
+    # Theo dõi val_accuracy, giảm LR 50%
+    ReduceLROnPlateau(monitor='val_accuracy', factor=0.5, patience=5, min_lr=1e-7, mode='max', verbose=1),
+    ModelCheckpoint(
+        "/content/drive/MyDrive/ai/model/best_cnn_model_v2.h5",
+        monitor='val_accuracy',
+        save_best_only=True,
+        mode='max' # Đảm bảo theo dõi val_accuracy theo mode 'max'
+    )
+]
+
+# ==== Huấn luyện model ====
+history = model.fit(
+    train_gen,
+    validation_data=val_gen,
+    epochs=100,
+    callbacks=callbacks
+)
+
+# ==== Lưu model cuối cùng ====
+model.save("/content/drive/MyDrive/ai/model/final_cnn_model_v2.h5")
+
+print("✅ Mô hình CNN nâng cấp đã được train và lưu thành công!")
