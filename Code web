@@ -1,0 +1,122 @@
+import streamlit as st
+import cv2
+import numpy as np
+from PIL import Image
+from tensorflow.keras.models import load_model
+from tensorflow.keras.preprocessing.image import img_to_array
+import os
+
+# =========================
+# ⚙️ CẤU HÌNH TRANG
+# =========================
+st.set_page_config(page_title="🍱 Nhận diện món ăn khay cơm", page_icon="🍚", layout="wide")
+st.title("🍱 HỆ THỐNG NHẬN DIỆN MÓN ĂN TRÊN KHAY CƠM")
+st.caption("Tải ảnh khay cơm, hệ thống sẽ chia thành 5 vùng và dự đoán món ăn từng vùng.")
+
+# =========================
+# 🧠 TẢI MÔ HÌNH CNN
+# =========================
+MODEL_PATH = "/content/best_cnn_model_v2 (1).h5"  # 👉 thay đường dẫn nếu khác
+
+@st.cache_resource
+def load_cnn_model():
+    if not os.path.exists(MODEL_PATH):
+        st.error(f"Không tìm thấy mô hình tại {MODEL_PATH}")
+        st.stop()
+    model = load_model(MODEL_PATH)
+    return model
+
+model = load_cnn_model()
+
+# Danh sách nhãn tương ứng mô hình
+LABELS = [
+    "cơm",
+    "thịt kho trứng",
+    "đậu sốt cà",
+    "cá hú kho",
+    "thịt kho",
+    "canh chua có cá",
+    "canh chua không cá",
+    "sườn nướng",
+    "canh rau (rau cải, rau muống)",
+    "rau xào (lagim, củ sắn, đậu que, đậu đũa)",
+    "trứng chiên thịt"
+]
+
+# =========================
+# ✂️ HÀM CHIA ẢNH THÀNH 5 KHAY
+# =========================
+def split_image_into_5_regions(image):
+    h, w = image.shape[:2]
+    regions = []
+    h1 = h // 2
+    w1 = w // 2
+    regions.append(image[0:h1, 0:w1])        # Khay 1
+    regions.append(image[0:h1, w1:w])        # Khay 2
+    w2 = w // 3
+    regions.append(image[h1:h, 0:w2])        # Khay 3
+    regions.append(image[h1:h, w2:2*w2])     # Khay 4
+    regions.append(image[h1:h, 2*w2:w])      # Khay 5
+    return regions
+
+# =========================
+# 🧭 HÀM VẼ KHUNG CHIA
+# =========================
+def draw_grid_on_image(image):
+    img = image.copy()
+    h, w = img.shape[:2]
+    cv2.line(img, (0, h//2), (w, h//2), (0,255,0), 3)
+    cv2.line(img, (w//2, 0), (w//2, h//2), (0,255,0), 3)
+    cv2.line(img, (w//3, h//2), (w//3, h), (0,255,0), 3)
+    cv2.line(img, (2*w//3, h//2), (2*w//3, h), (0,255,0), 3)
+
+    positions = [
+        (w//4, h//4),
+        (3*w//4, h//4),
+        (w//6, 3*h//4),
+        (w//2, 3*h//4),
+        (5*w//6, 3*h//4)
+    ]
+
+    for i, (x, y) in enumerate(positions):
+        cv2.putText(img, f"Khay {i+1}", (x-60, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 0, 255), 3, cv2.LINE_AA)
+    return img
+
+# =========================
+# 🔮 DỰ ĐOÁN MÓN ĂN
+# =========================
+def predict_dish(region):
+    img = cv2.resize(region, (128, 128))  # Kích thước input model
+    img = img_to_array(img) / 255.0
+    img = np.expand_dims(img, axis=0)
+    pred = model.predict(img)
+    class_id = np.argmax(pred)
+    confidence = float(np.max(pred))
+    return LABELS[class_id], confidence
+# =========================
+# 📤 GIAO DIỆN UPLOAD ẢNH
+# =========================
+uploaded_file = st.file_uploader("📸 Chọn ảnh khay cơm", type=["jpg", "jpeg", "png"])
+
+if uploaded_file is not None:
+    image = np.array(Image.open(uploaded_file).convert("RGB"))
+    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    image = cv2.resize(image, (1024, 768))
+
+    grid_image = draw_grid_on_image(image)
+    regions = split_image_into_5_regions(image)
+
+    st.image(cv2.cvtColor(grid_image, cv2.COLOR_BGR2RGB),
+             caption="Ảnh khay có khung chia", use_container_width=True)
+
+    st.write("### 🍽️ Kết quả nhận diện:")
+    cols = st.columns(5)
+    for i, region in enumerate(regions):
+        label, conf = predict_dish(region)
+        with cols[i]:
+            st.image(cv2.cvtColor(region, cv2.COLOR_BGR2RGB),
+                     caption=f"Khay {i+1}")
+            st.success(f"{label} ({conf*100:.1f}%)")
+else:
+    st.info("⬆️ Vui lòng tải ảnh khay cơm để bắt đầu.")
