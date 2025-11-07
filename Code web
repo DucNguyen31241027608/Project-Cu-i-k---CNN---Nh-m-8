@@ -1,122 +1,168 @@
-import streamlit as st
-import cv2
+# =========================================================
+# 🍱 HỆ THỐNG TÍNH TIỀN KHAY CƠM TỰ ĐỘNG (CNN + QR + Excel)
+# =========================================================
+
+!pip install gradio tensorflow opencv-python-headless pillow numpy pandas qrcode openpyxl --quiet
+
+import gradio as gr
+import cv2, qrcode, io, datetime, os
 import numpy as np
-from PIL import Image
+import pandas as pd
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import img_to_array
-import os
+from PIL import Image
 
-# =========================
-# ⚙️ CẤU HÌNH TRANG
-# =========================
-st.set_page_config(page_title="🍱 Nhận diện món ăn khay cơm", page_icon="🍚", layout="wide")
-st.title("🍱 HỆ THỐNG NHẬN DIỆN MÓN ĂN TRÊN KHAY CƠM")
-st.caption("Tải ảnh khay cơm, hệ thống sẽ chia thành 5 vùng và dự đoán món ăn từng vùng.")
+# =====================================================
+# 1️⃣ Cấu hình resize ảnh & toạ độ cắt khay
+# =====================================================
+RESIZE_WIDTH, RESIZE_HEIGHT = 1024, 768
 
-# =========================
-# 🧠 TẢI MÔ HÌNH CNN
-# =========================
-MODEL_PATH = "/content/best_cnn_model_v2 (1).h5"  # 👉 thay đường dẫn nếu khác
+fixed_boxes = {
+    "Khay 1": (80, 100, 460, 400),
+    "Khay 2": (580, 100, 950, 420),
+    "Khay 3": (80, 450, 300, 700),
+    "Khay 4": (420, 450, 600, 700),
+    "Khay 5": (720, 450, 950, 700)
+}
 
-@st.cache_resource
-def load_cnn_model():
-    if not os.path.exists(MODEL_PATH):
-        st.error(f"Không tìm thấy mô hình tại {MODEL_PATH}")
-        st.stop()
-    model = load_model(MODEL_PATH)
-    return model
+# =====================================================
+# 2️⃣ Danh sách món ăn (giá + calo)
+# =====================================================
+food_info = {
+    "Cơm trắng": {"price": 10000, "calo": 200},
+    "Đậu hũ sốt cà": {"price": 25000, "calo": 180},
+    "Cá hú kho": {"price": 30000, "calo": 250},
+    "Thịt kho trứng": {"price": 30000, "calo": 350},
+    "Thịt kho": {"price": 25000, "calo": 280},
+    "Canh chua cá": {"price": 25000, "calo": 120},
+    "Canh rau": {"price": 7000, "calo": 30},
+    "Rau xào": {"price": 10000, "calo": 60},
+    "Sườn nướng": {"price": 30000, "calo": 320},
+    "Trứng chiên": {"price": 25000, "calo": 220},
+}
 
-model = load_cnn_model()
+# =====================================================
+# 3️⃣ Hàm xử lý ảnh
+# =====================================================
+def resize_image(img):
+    return cv2.resize(img, (RESIZE_WIDTH, RESIZE_HEIGHT))
 
-# Danh sách nhãn tương ứng mô hình
-LABELS = [
-    "cơm",
-    "thịt kho trứng",
-    "đậu sốt cà",
-    "cá hú kho",
-    "thịt kho",
-    "canh chua có cá",
-    "canh chua không cá",
-    "sườn nướng",
-    "canh rau (rau cải, rau muống)",
-    "rau xào (lagim, củ sắn, đậu que, đậu đũa)",
-    "trứng chiên thịt"
-]
-
-# =========================
-# ✂️ HÀM CHIA ẢNH THÀNH 5 KHAY
-# =========================
-def split_image_into_5_regions(image):
-    h, w = image.shape[:2]
-    regions = []
-    h1 = h // 2
-    w1 = w // 2
-    regions.append(image[0:h1, 0:w1])        # Khay 1
-    regions.append(image[0:h1, w1:w])        # Khay 2
-    w2 = w // 3
-    regions.append(image[h1:h, 0:w2])        # Khay 3
-    regions.append(image[h1:h, w2:2*w2])     # Khay 4
-    regions.append(image[h1:h, 2*w2:w])      # Khay 5
-    return regions
-
-# =========================
-# 🧭 HÀM VẼ KHUNG CHIA
-# =========================
-def draw_grid_on_image(image):
-    img = image.copy()
-    h, w = img.shape[:2]
-    cv2.line(img, (0, h//2), (w, h//2), (0,255,0), 3)
-    cv2.line(img, (w//2, 0), (w//2, h//2), (0,255,0), 3)
-    cv2.line(img, (w//3, h//2), (w//3, h), (0,255,0), 3)
-    cv2.line(img, (2*w//3, h//2), (2*w//3, h), (0,255,0), 3)
-
-    positions = [
-        (w//4, h//4),
-        (3*w//4, h//4),
-        (w//6, 3*h//4),
-        (w//2, 3*h//4),
-        (5*w//6, 3*h//4)
-    ]
-
-    for i, (x, y) in enumerate(positions):
-        cv2.putText(img, f"Khay {i+1}", (x-60, y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 0, 255), 3, cv2.LINE_AA)
-    return img
-
-# =========================
-# 🔮 DỰ ĐOÁN MÓN ĂN
-# =========================
-def predict_dish(region):
-    img = cv2.resize(region, (128, 128))  # Kích thước input model
+def preprocess_for_model(img, target_size=(128, 128)):
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img = cv2.resize(img, target_size)
     img = img_to_array(img) / 255.0
     img = np.expand_dims(img, axis=0)
-    pred = model.predict(img)
-    class_id = np.argmax(pred)
-    confidence = float(np.max(pred))
-    return LABELS[class_id], confidence
-# =========================
-# 📤 GIAO DIỆN UPLOAD ẢNH
-# =========================
-uploaded_file = st.file_uploader("📸 Chọn ảnh khay cơm", type=["jpg", "jpeg", "png"])
+    return img
 
-if uploaded_file is not None:
-    image = np.array(Image.open(uploaded_file).convert("RGB"))
-    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-    image = cv2.resize(image, (1024, 768))
+# =====================================================
+# 4️⃣ Tạo mã QR thanh toán Momo
+# =====================================================
+def create_momo_qr(amount):
+    momo_number = "0868842297"
+    url = f"https://nhantien.momo.vn/{momo_number}/{amount}"
+    qr_img = qrcode.make(url)
+    buf = io.BytesIO()
+    qr_img.save(buf, format='PNG')
+    buf.seek(0)
+    return Image.open(buf)
 
-    grid_image = draw_grid_on_image(image)
-    regions = split_image_into_5_regions(image)
+# =====================================================
+# 5️⃣ Hàm chính: nhận diện + tính tiền + calo
+# =====================================================
+def analyze_food_tray(image, model_file, name):
+    if image is None:
+        return "❌ Chưa chọn ảnh khay cơm", None, None, None
+    if model_file is None:
+        return "❌ Chưa tải mô hình .h5", None, None, None
 
-    st.image(cv2.cvtColor(grid_image, cv2.COLOR_BGR2RGB),
-             caption="Ảnh khay có khung chia", use_container_width=True)
+    try:
+        model = load_model(model_file.name)
+except Exception as e:
+        return f"❌ Lỗi khi load mô hình: {e}", None, None, None
 
-    st.write("### 🍽️ Kết quả nhận diện:")
-    cols = st.columns(5)
-    for i, region in enumerate(regions):
-        label, conf = predict_dish(region)
-        with cols[i]:
-            st.image(cv2.cvtColor(region, cv2.COLOR_BGR2RGB),
-                     caption=f"Khay {i+1}")
-            st.success(f"{label} ({conf*100:.1f}%)")
-else:
-    st.info("⬆️ Vui lòng tải ảnh khay cơm để bắt đầu.")
+    # Nếu model không có class_names, tự gán
+    class_names = list(food_info.keys())
+
+    img = np.array(image)
+    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    img = resize_image(img)
+
+    total_price = 0
+    total_calo = 0
+    results = []
+    crop_gallery = []
+
+    for name_box, (x1, y1, x2, y2) in fixed_boxes.items():
+        crop = img[y1:y2, x1:x2]
+        crop_input = preprocess_for_model(crop)
+        preds = model.predict(crop_input, verbose=0)
+
+        idx = np.argmax(preds)
+        conf = preds[0][idx]
+
+        dish_name = class_names[idx] if idx < len(class_names) else f"Lớp {idx}"
+        info = food_info.get(dish_name, {"price": 0, "calo": 0})
+
+        total_price += info["price"]
+        total_calo += info["calo"]
+
+        results.append(f"🍱 {name_box}: {dish_name} ({conf:.2f}) — {info['price']:,}đ, {info['calo']} kcal")
+        crop_gallery.append(Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)))
+
+    summary = f"""
+📅 {datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")}
+👤 Khách hàng: {name}
+──────────────────────────────
+💰 Tổng tiền: {total_price:,} đ
+🔥 Tổng calo: {total_calo} kcal
+──────────────────────────────
+""" + "\n".join(results)
+
+    # Lưu Excel
+    record = {
+        "Thời gian": datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+        "Tên": name,
+        "Tổng tiền": total_price,
+        "Calo": total_calo
+    }
+
+    file_path = "lich_su_khay_com.xlsx"
+    if not os.path.exists(file_path):
+        pd.DataFrame([record]).to_excel(file_path, index=False)
+    else:
+        old = pd.read_excel(file_path)
+        pd.concat([old, pd.DataFrame([record])], ignore_index=True).to_excel(file_path, index=False)
+
+    momo_qr = create_momo_qr(total_price)
+    return summary, crop_gallery, f"Tổng tiền: {total_price:,}đ | {total_calo} kcal", momo_qr
+
+# =====================================================
+# 6️⃣ Giao diện Gradio
+# =====================================================
+with gr.Blocks(
+    theme=gr.themes.Soft(primary_hue="orange", secondary_hue="pink"),
+    css="""
+    #app {background: linear-gradient(135deg,#FFF8E1,#FFE0B2);}
+    h1 {text-align:center; color:#E65100;}
+    p {text-align:center; color:#444;}
+    """
+) as app:
+    gr.Markdown("<h1>🍱 HỆ THỐNG KHAY CƠM THÔNG MINH</h1>")
+    gr.Markdown("<p>Tự động nhận diện món ăn - tính tiền - thanh toán Momo</p>")
+
+    name = gr.Textbox(label="👤 Tên khách hàng", placeholder="Nhập tên...")
+    with gr.Row():
+        input_image = gr.Image(label="📸 Ảnh khay cơm hoặc Webcam", type="pil", sources=["upload", "webcam"])
+        model_file = gr.File(label="📂 Upload mô hình (.h5)")
+
+    btn = gr.Button("🚀 PHÂN TÍCH & TÍNH TIỀN", variant="primary")
+with gr.Row():
+        output_text = gr.Textbox(label="📋 Kết quả chi tiết", lines=10)
+        gallery = gr.Gallery(label="🧩 Ảnh từng khay", columns=5, height=200)
+    
+    total_box = gr.Textbox(label="💰 Tổng kết nhanh", interactive=False)
+    qr_display = gr.Image(label="💵 Quét mã Momo để thanh toán")
+
+    btn.click(analyze_food_tray, inputs=[input_image, model_file, name], outputs=[output_text, gallery, total_box, qr_display])
+
+app.launch(debug=True)
